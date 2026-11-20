@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, Compass, FileText, Sparkles, Bell, Target, Settings,
+  LogIn, LogOut,LayoutDashboard, Compass, FileText, Sparkles, Bell, Target, Settings,
   Search, Upload, ArrowUpRight, Clock3, CheckCircle2, AlertCircle, Menu,
   X, GraduationCap, BriefcaseBusiness, HeartHandshake, ChevronRight,
   TrendingUp, Filter, ExternalLink, BrainCircuit, ShieldCheck, Zap
 } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const nav = [
   ["Overview", LayoutDashboard], ["Discover", Compass], ["Resume Analyzer", FileText],
   ["My Matches", Target], ["Skill Gaps", BrainCircuit], ["Deadlines", Bell]
@@ -22,6 +22,16 @@ function daysLeft(dateString) {
 }
 function App() {
   const [page, setPage] = useState("Overview");
+  const [authMode, setAuthMode] = useState("login");
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("opportunity-ai-user") || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [opportunities, setOpportunities] = useState([]);
   const [matches, setMatches] = useState([]);
@@ -64,6 +74,50 @@ function App() {
 
   const notify = (msg) => { setToast(msg); window.setTimeout(() => setToast(""), 2800); };
 
+  async function handleAuth(event) {
+  event.preventDefault();
+  setAuthError("");
+  setAuthLoading(true);
+
+  const endpoint = authMode === "register" ? "register" : "login";
+
+  const payload = {
+    email: event.target.email.value,
+    password: event.target.password.value,
+  };
+
+  if (authMode === "register") {
+    payload.full_name = event.target.full_name.value;
+  }
+
+  try {
+    const response = await fetch(`${API}/api/${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Authentication failed.");
+    }
+
+    if (authMode === "register") {
+      setAuthMode("login");
+      notify("Account created! Please log in.");
+    } else {
+      localStorage.setItem("opportunity-ai-user", JSON.stringify(data.user));
+      localStorage.setItem("opportunity-ai-token", data.access_token);
+      setUser(data.user);
+      notify("Welcome back!");
+    }
+  } catch (error) {
+    setAuthError(error.message);
+  } finally {
+    setAuthLoading(false);
+  }
+}
   async function loadOpportunities() {
     setLoading(true); setError("");
     try {
@@ -116,6 +170,76 @@ function App() {
   }
   const categories = ["All", ...new Set(opportunities.map(o => o.category))];
 
+  if (!user) {
+  return (
+    <div className="auth-page">
+      <div className="auth-card">
+        <div className="auth-logo">
+          <Sparkles size={28} />
+        </div>
+
+        <h1>Opportunity AI</h1>
+        <p>
+          {authMode === "register"
+            ? "Create your account to get started."
+            : "Log in to discover opportunities made for you."}
+        </p>
+
+        <form onSubmit={handleAuth}>
+          {authMode === "register" && (
+            <input
+              name="full_name"
+              type="text"
+              placeholder="Full name"
+              required
+            />
+          )}
+
+          <input
+            name="email"
+            type="email"
+            placeholder="Email address"
+            required
+          />
+
+          <input
+            name="password"
+            type="password"
+            placeholder="Password (at least 8 characters)"
+            minLength={8}
+            required
+          />
+
+          {authError && <p className="auth-error">{authError}</p>}
+
+          <button type="submit" disabled={authLoading}>
+            {authLoading
+              ? "Please wait..."
+              : authMode === "register"
+              ? "Create Account"
+              : "Log In"}
+          </button>
+        </form>
+
+        <p className="auth-switch">
+          {authMode === "register"
+            ? "Already have an account?"
+            : "Don't have an account?"}
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode(authMode === "register" ? "login" : "register");
+              setAuthError("");
+            }}
+          >
+            {authMode === "register" ? "Log In" : "Sign Up"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="brand">
@@ -127,18 +251,52 @@ function App() {
       <nav>{nav.map(([label, Icon]) => <button key={label} className={`nav-item ${page===label?"active":""}`} onClick={()=>{setPage(label);setMobileOpen(false);}}>
         <Icon size={18}/><span>{label}</span>{label==="My Matches" && <em>{matchedCount}</em>}
       </button>)}</nav>
-      <div className="sidebar-bottom">
-        <div className="help-card"><div className="help-icon"><Zap size={17}/></div><b>Make your next move</b><p>Small steps today create big opportunities tomorrow.</p><button onClick={()=>setPage("Skill Gaps")}>Explore skills <ArrowUpRight size={14}/></button></div>
-        <button className="nav-item"><Settings size={18}/><span>Settings</span></button>
-        <div className="profile"><div className="avatar">GU</div><div><b>Guest User</b><small>Free workspace</small></div><span className="online-dot"/></div>
-      </div>
+      
+<div className="sidebar-bottom">
+  <div className="help-card">
+    <div className="help-icon"><Zap size={17}/></div>
+    <b>Make your next move</b>
+    <p>Small steps today create big opportunities tomorrow.</p>
+    <button onClick={()=>setPage("Skill Gaps")}>
+      Explore skills <ArrowUpRight size={14}/>
+    </button>
+  </div>
+
+  <button className="nav-item">
+    <Settings size={18}/>
+    <span>Settings</span>
+  </button>
+
+  <button
+    className="nav-item"
+    onClick={() => {
+      localStorage.removeItem("opportunity-ai-user");
+      localStorage.removeItem("opportunity-ai-token");
+      setUser(null);
+      setAuthMode("login");
+      notify("You have been logged out.");
+    }}
+  >
+    <LogOut size={18}/>
+    <span>Log Out</span>
+  </button>
+
+  <div className="profile">
+    <div className="avatar">{initials(user?.full_name)}</div>
+    <div>
+      <b>{user?.full_name || "Guest User"}</b>
+      <small>Free workspace</small>
+    </div>
+    <span className="online-dot"/>
+  </div>
+</div>
     </aside>
 
     <main className="main-area">
       <header className="topbar">
         <button className="hamburger" onClick={()=>setMobileOpen(true)}><Menu/></button>
         <div className="breadcrumb">Workspace <ChevronRight size={14}/> <b>{page}</b></div>
-        <div className="top-actions"><span className="date-label">Your opportunity hub</span><button className="icon-button" onClick={()=>setPage("Deadlines")} aria-label="Notifications"><Bell size={18}/><i/></button><div className="avatar small">GU</div></div>
+        <div className="top-actions"><span className="date-label">Your opportunity hub</span><button className="icon-button" onClick={()=>setPage("Deadlines")} aria-label="Notifications"><Bell size={18}/><i/></button><div className="avatar small">{initials(user?.full_name)}</div></div>
       </header>
       <div className="content">
         {error && <div className="error-banner"><AlertCircle size={17}/>{error}<button onClick={()=>setError("")}>Dismiss</button></div>}
@@ -212,3 +370,4 @@ function MatchCard({item}) {
   return <article className="match-card"><div className="match-main"><div className="match-card-icon"><Sparkles size={18}/></div><div><span className="eyebrow">{item.category} · {item.organization}</span><h3>{item.title}</h3><p>{item.description}</p></div></div><div className="score-area"><div className="score-ring" style={{"--score":`${item.match_score}%`}}><b>{item.match_score}</b><small>%</small></div><span>Match score</span></div><div className="match-details"><div><b><CheckCircle2 size={15}/> Matched skills</b><div className="tag-row">{item.matched_skills.length?item.matched_skills.map(s=><span key={s}>{s}</span>):<small>No direct skill overlap yet</small>}</div></div><div><b><AlertCircle size={15}/> Skills to build</b><div className="tag-row">{item.missing_skills.length?item.missing_skills.slice(0,4).map(s=><span className="missing-tag" key={s}>{s}</span>):<small>No gaps detected</small>}</div></div></div><div className="match-footer"><span className="eligibility"><ShieldCheck size={14}/>{item.eligibility_status}</span><a href={item.link} target="_blank" rel="noreferrer">Official details <ExternalLink size={14}/></a></div></article>;
 }
 export default App;
+

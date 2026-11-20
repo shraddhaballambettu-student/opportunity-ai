@@ -1,6 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from pwdlib import PasswordHash
+import jwt
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from datetime import date, timedelta
 import sqlite3
@@ -19,6 +23,22 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "opportunity_ai.db"
+password_hash = PasswordHash.recommended()
+
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("Please set the JWT_SECRET environment variable")
+
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = 60
+class RegisterRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    email: str
+    password: str = Field(min_length=8, max_length=128)
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 app = FastAPI(title="Opportunity AI API", version="1.0.0")
 app.add_middleware(
@@ -148,6 +168,18 @@ def init_db():
                     "|".join(item["skills"]), "|".join(item["eligibility"]),
                     item["link"], item["type"]
                 ))
+        
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT,
+                google_id TEXT UNIQUE,
+                is_verified INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
 def row_to_dict(row):
     data = dict(row)
@@ -162,6 +194,80 @@ def startup():
 @app.get("/")
 def home():
     return {"message": "Opportunity AI API is running", "docs": "/docs"}
+
+
+@app.post("/api/register")
+def register_user(user: RegisterRequest):
+    full_name = user.full_name.strip()
+    email = user.email.strip().lower()
+
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Please enter your full name")
+
+    hashed_password = password_hash.hash(user.password)
+
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO users (full_name, email, password_hash)
+                VALUES (?, ?, ?)
+                """,
+                (full_name, email, hashed_password)
+            )
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail="An account with this email already exists"
+        )
+
+    return {"message": "Account created successfully"}
+
+@app.post("/api/login")
+def login_user(user: LoginRequest):
+    email = user.email.strip().lower()
+
+    with connect() as conn:
+        account = conn.execute(
+            "SELECT * FROM users WHERE email = ?",
+            (email,)
+        ).fetchone()
+
+    if not account or not account["password_hash"]:
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect email or password"
+        )
+
+    if not password_hash.verify(user.password, account["password_hash"]):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect email or password"
+        )
+
+    token = jwt.encode(
+        {
+            "sub": str(account["id"]),
+            "email": account["email"],
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM
+    )
+
+    return {
+        "message": "Login successful",
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": account["id"],
+            "full_name": account["full_name"],
+            "email": account["email"]
+        }
+    }
 
 @app.get("/api/opportunities")
 def get_opportunities(search: str = "", category: str = "All"):
